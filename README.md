@@ -45,7 +45,7 @@ cd backend
 pip install pytest httpx
 python -m pytest -q
 ```
-Tests exercise API flows without downloading AI models. **End-to-end STT, translation, TTS, MP4 and frontend build have not been verified on the target Apple Silicon machine.** The MLX-Audio model API may vary by version and voice/language compatibility. Long-running jobs use FastAPI BackgroundTasks, not a durable worker queue; they can be lost on server restart. Concurrent multi-hour video processing, automatic retries, progress percentages, subtitle/video alignment quality, and resource scheduling need further production hardening. Export mixes generated speech at segment timestamps, but does not time-stretch audio to fit every original sentence duration, so overlap is possible.
+Tests exercise API flows without downloading AI models. **End-to-end STT, translation, TTS, MP4 and frontend build have not been verified on the target Apple Silicon machine.** The MLX-Audio model API may vary by version and voice/language compatibility. Long-running jobs use a persistent SQLite-backed worker queue; run the separate worker process. Concurrent multi-hour video processing, automatic retries, progress percentages, subtitle/video alignment quality, and resource scheduling need further production hardening. Export mixes generated speech at segment timestamps, but does not time-stretch audio to fit every original sentence duration, so overlap is possible.
 
 ## Environment
 - `WHISPER_MODEL` (default `small`)
