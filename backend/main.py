@@ -119,7 +119,7 @@ async def upload(file:UploadFile=File(...)):
         p=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(target)],capture_output=True,text=True,check=True)
         duration=float(p.stdout.strip())
     except (OSError,ValueError,subprocess.CalledProcessError): pass
-    with db() as c: c.execute("INSERT INTO projects VALUES(?,?,?,?)",(pid,Path(file.filename).stem,str(target),duration))
+    with db() as c: c.execute("INSERT INTO projects(id,title,video,duration) VALUES(?,?,?,?)",(pid,Path(file.filename).stem,str(target),duration))
     with db() as c: c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(pid,"en"))
     return {"id":pid,"title":Path(file.filename).stem,"duration":duration}
 @app.get("/api/projects/{pid}/video")
