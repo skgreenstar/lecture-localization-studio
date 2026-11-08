@@ -59,7 +59,8 @@ def execute(job,progress):
             if not existing:
                 result=translation().translate(row["source"],lang,payload.get("model"))
                 with connect() as c:
-                    c.execute("INSERT OR IGNORE INTO translations VALUES(?,?,?,?,?,0)",(uuid.uuid4().hex,row["id"],lang,result,1))
+                    if not c.execute("SELECT 1 FROM translations WHERE segment_id=? AND language=?",(row["id"],lang)).fetchone():
+                        c.execute("INSERT INTO translations VALUES(?,?,?,?,?,0)",(uuid.uuid4().hex,row["id"],lang,result,1))
             progress((i+1)*100/len(rows))
         with connect() as c:c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(pid,lang))
         return f"{len(rows)} segments checked"
@@ -105,10 +106,20 @@ def execute(job,progress):
             if not Path(row["path"]).is_file():raise RuntimeError("Missing cached audio")
         revision=digest([(r["id"],r["path"],r["start"],r["end"]) for r in rows])
         target=DATA/pid/("dubbed_"+lang+"_"+revision[:12]+".mp4")
-        if not target.exists():
-            tmp=target.with_name(target.stem+".tmp.mp4")
+        if not target.exists() or target.stat().st_size==0:
+            tmp=target.with_name(target.stem+"."+uuid.uuid4().hex+".tmp.mp4")
             try:
                 render_dubbed_video(Path(p["video"]),[(r["start"],r["end"],Path(r["path"])) for r in rows],tmp,float(p["duration"]))
+                # Never publish an export if its translation revisions changed while rendering.
+                with connect() as c:
+                    fresh=c.execute("""SELECT s.start,s.end,a.path,t.id FROM segments s
+                        JOIN translations t ON t.segment_id=s.id AND t.language=? AND t.approved=1
+                        JOIN audio_assets a ON a.translation_id=t.id
+                        WHERE s.project_id=? AND t.version=(SELECT MAX(x.version) FROM translations x WHERE x.segment_id=s.id AND x.language=t.language)
+                        AND a.rowid=(SELECT MAX(a2.rowid) FROM audio_assets a2 WHERE a2.translation_id=t.id)
+                        ORDER BY s.start""",(lang,pid)).fetchall()
+                if digest([(r["id"],r["path"],r["start"],r["end"]) for r in fresh])!=revision:
+                    raise RuntimeError("Translations changed during export; retry with the latest revisions")
                 os.replace(tmp,target)
             finally:tmp.unlink(missing_ok=True)
         return str(target)
