@@ -57,7 +57,7 @@ def execute(job,progress):
             with connect() as c:
                 existing=c.execute("SELECT 1 FROM translations WHERE segment_id=? AND language=?",(row["id"],lang)).fetchone()
             if not existing:
-                result=translation().translate(row["source"],lang)
+                result=translation().translate(row["source"],lang,payload.get("model"))
                 with connect() as c:
                     c.execute("INSERT OR IGNORE INTO translations VALUES(?,?,?,?,?,0)",(uuid.uuid4().hex,row["id"],lang,result,1))
             progress((i+1)*100/len(rows))
