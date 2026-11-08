@@ -1,4 +1,4 @@
-from queue_worker import enqueue, status as durable_status
+from queue_worker import enqueue, status as durable_status, cancel as cancel_job, retry as retry_job
 from pathlib import Path
 import sqlite3, uuid, shutil, subprocess, json, threading, time
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -305,3 +305,21 @@ def run_pipeline(jid,pid,language,kind,model):
         with db() as c:c.execute("UPDATE pipeline_jobs SET status='completed',output=? WHERE id=?",(output,jid))
     except Exception as exc:
         with db() as c:c.execute("UPDATE pipeline_jobs SET status='failed',error=? WHERE id=?",(str(exc)[:1000],jid))
+
+@app.post("/api/pipeline-jobs/{jid}/cancel")
+def cancel_pipeline_job(jid:str):
+    if not durable_status(jid):raise HTTPException(404,"Job not found")
+    if not cancel_job(jid):raise HTTPException(409,"Only queued jobs can be cancelled")
+    return {"status":"cancelled"}
+
+@app.post("/api/pipeline-jobs/{jid}/retry")
+def retry_pipeline_job(jid:str):
+    if not durable_status(jid):raise HTTPException(404,"Job not found")
+    if not retry_job(jid):raise HTTPException(409,"Only failed jobs can be retried")
+    return {"status":"queued"}
+
+@app.get("/api/projects/{pid}/pipeline-jobs")
+def list_pipeline_jobs(pid:str,limit:int=50):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
+        return [dict(r) for r in c.execute("SELECT * FROM durable_jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ?",(pid,max(1,min(limit,200))))]
