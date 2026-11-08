@@ -7,15 +7,15 @@ import pipeline
 class STTAdapter(Protocol):
     def transcribe(self, media: Path) -> list[dict]: ...
 class TranslationAdapter(Protocol):
-    def translate(self, text: str, language: str) -> str: ...
+    def translate(self, text: str, language: str, model: str | None = None) -> str: ...
 class TTSAdapter(Protocol):
     def synthesize(self, text: str, language: str, voice: str, output: Path) -> Path: ...
 
 class WhisperSTT:
     def transcribe(self, media):return pipeline.transcribe(media)
 class OllamaTranslation:
-    def translate(self,text,language):
-        return pipeline.translate(text,language,os.getenv("TRANSLATION_MODEL","qwen3:8b"))
+    def translate(self,text,language,model=None):
+        return pipeline.translate(text,language,model or os.getenv("TRANSLATION_MODEL","qwen3:8b"))
 class MLXTTS:
     def synthesize(self,text,language,voice,output):
         return pipeline.synthesize(text,language,voice,output)
