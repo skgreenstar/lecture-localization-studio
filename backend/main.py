@@ -1,5 +1,5 @@
 from pathlib import Path
-import sqlite3, uuid, shutil, subprocess
+import sqlite3, uuid, shutil, subprocess, json, threading, time
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -21,10 +21,76 @@ with db() as c:
     CREATE TABLE IF NOT EXISTS translations(id TEXT PRIMARY KEY,segment_id TEXT,language TEXT,text TEXT,version INTEGER,approved INTEGER DEFAULT 0,UNIQUE(segment_id,language,version));
     CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,translation_id TEXT,status TEXT,error TEXT);
     CREATE TABLE IF NOT EXISTS audio_assets(id TEXT PRIMARY KEY,translation_id TEXT,path TEXT);
+    CREATE TABLE IF NOT EXISTS project_tags(project_id TEXT,tag TEXT,PRIMARY KEY(project_id,tag));
+    CREATE TABLE IF NOT EXISTS project_languages(project_id TEXT,language TEXT,PRIMARY KEY(project_id,language));
     """)
+    for column, definition in [("created_at","TEXT DEFAULT CURRENT_TIMESTAMP"),("updated_at","TEXT DEFAULT CURRENT_TIMESTAMP")]:
+        try: c.execute(f"ALTER TABLE projects ADD COLUMN {column} {definition}")
+        except sqlite3.OperationalError: pass
 def uid(): return uuid.uuid4().hex
 def latest(c,sid,lang):
     return c.execute("SELECT * FROM translations WHERE segment_id=? AND language=? ORDER BY version DESC LIMIT 1",(sid,lang)).fetchone()
+class ProjectUpdate(BaseModel):
+    title:str=Field(min_length=1,max_length=200)
+class TagsIn(BaseModel):
+    tags:list[str]=Field(default_factory=list,max_length=20)
+class LanguageIn(BaseModel):
+    language:str=Field(pattern="^(en|ja|zh|es|fr|de)$")
+@app.get("/api/projects/library")
+def library(q:str="",tag:str="",sort:str="recent"):
+    with db() as c:
+        rows=c.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
+        out=[]
+        for p in rows:
+            tags=[r["tag"] for r in c.execute("SELECT tag FROM project_tags WHERE project_id=?",(p["id"],))]
+            if q and q.lower() not in p["title"].lower():continue
+            if tag and tag not in tags:continue
+            langs=[r["language"] for r in c.execute("SELECT language FROM project_languages WHERE project_id=?",(p["id"],))]
+            total=c.execute("SELECT COUNT(*) n FROM segments WHERE project_id=?",(p["id"],)).fetchone()["n"]
+            progress={}
+            for lang in langs:
+                done=c.execute("""SELECT COUNT(*) n FROM segments s WHERE s.project_id=? AND EXISTS
+                    (SELECT 1 FROM translations t WHERE t.segment_id=s.id AND t.language=? AND t.approved=1 AND t.version=
+                    (SELECT MAX(t2.version) FROM translations t2 WHERE t2.segment_id=s.id AND t2.language=?))""",(p["id"],lang,lang)).fetchone()["n"]
+                progress[lang]={"approved":done,"total":total,"percent":round(100*done/total) if total else 0}
+            out.append({**dict(p),"tags":tags,"languages":langs,"progress":progress,"segment_count":total})
+        if sort=="name":out.sort(key=lambda x:x["title"].lower())
+        elif sort=="oldest":out.reverse()
+        return out
+@app.patch("/api/projects/{pid}")
+def rename_project(pid:str,payload:ProjectUpdate):
+    with db() as c:
+        r=c.execute("UPDATE projects SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(payload.title.strip(),pid))
+        if not r.rowcount:raise HTTPException(404,"Project not found")
+    return {"id":pid,"title":payload.title.strip()}
+@app.put("/api/projects/{pid}/tags")
+def set_tags(pid:str,payload:TagsIn):
+    tags=list(dict.fromkeys(t.strip()[:40] for t in payload.tags if t.strip()))
+    with db() as c:
+        if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
+        c.execute("DELETE FROM project_tags WHERE project_id=?",(pid,))
+        c.executemany("INSERT INTO project_tags VALUES(?,?)",[(pid,t) for t in tags])
+    return {"tags":tags}
+@app.post("/api/projects/{pid}/languages")
+def add_language(pid:str,payload:LanguageIn):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
+        c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(pid,payload.language))
+    return {"language":payload.language}
+@app.delete("/api/projects/{pid}")
+def delete_project(pid:str):
+    with db() as c:
+        p=c.execute("SELECT video FROM projects WHERE id=?",(pid,)).fetchone()
+        if not p:raise HTTPException(404,"Project not found")
+        c.execute("DELETE FROM jobs WHERE translation_id IN (SELECT t.id FROM translations t JOIN segments s ON s.id=t.segment_id WHERE s.project_id=?)",(pid,))
+        c.execute("DELETE FROM audio_assets WHERE translation_id IN (SELECT t.id FROM translations t JOIN segments s ON s.id=t.segment_id WHERE s.project_id=?)",(pid,))
+        c.execute("DELETE FROM translations WHERE segment_id IN (SELECT id FROM segments WHERE project_id=?)",(pid,))
+        for table in ("segments","project_tags","project_languages"):
+            c.execute(f"DELETE FROM {table} WHERE project_id=?",(pid,))
+        c.execute("DELETE FROM projects WHERE id=?",(pid,))
+    folder=DATA/pid
+    if folder.is_dir():shutil.rmtree(folder)
+    return {"deleted":True}
 class SegmentIn(BaseModel):
     start:float=Field(ge=0)
     end:float
@@ -54,6 +120,7 @@ async def upload(file:UploadFile=File(...)):
         duration=float(p.stdout.strip())
     except (OSError,ValueError,subprocess.CalledProcessError): pass
     with db() as c: c.execute("INSERT INTO projects VALUES(?,?,?,?)",(pid,Path(file.filename).stem,str(target),duration))
+    with db() as c: c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(pid,"en"))
     return {"id":pid,"title":Path(file.filename).stem,"duration":duration}
 @app.get("/api/projects/{pid}/video")
 def video(pid:str):
@@ -78,6 +145,7 @@ def add_segment(pid:str,payload:SegmentIn):
     with db() as c:
         if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone(): raise HTTPException(404,"Project not found")
         c.execute("INSERT INTO segments VALUES(?,?,?,?,?)",(sid,pid,payload.start,payload.end,payload.source))
+        c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(pid,payload.language))
         if payload.translation.strip(): c.execute("INSERT INTO translations VALUES(?,?,?,?,?,0)",(uid(),sid,payload.language,payload.translation,1))
     return {"id":sid}
 @app.put("/api/segments/{sid}/translations/{lang}")
@@ -88,6 +156,7 @@ def edit(sid:str,lang:str,payload:TranslationIn):
         if v!=payload.expected_version: raise HTTPException(409,"Version conflict")
         tid=uid()
         c.execute("INSERT INTO translations VALUES(?,?,?,?,?,0)",(tid,sid,lang,payload.text,v+1))
+        c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(c.execute("SELECT project_id FROM segments WHERE id=?",(sid,)).fetchone()["project_id"],lang))
     return {"id":tid,"version":v+1,"approved":False}
 @app.post("/api/translations/{tid}/approve")
 def approve(tid:str):
