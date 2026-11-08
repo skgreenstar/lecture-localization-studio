@@ -7,6 +7,12 @@ from urllib.error import URLError
 def command(args, timeout=7200):
     return subprocess.run(args,check=True,capture_output=True,text=True,timeout=timeout).stdout
 
+from functools import lru_cache
+@lru_cache(maxsize=2)
+def _load_whisper(size,device):
+    from faster_whisper import WhisperModel
+    return WhisperModel(size,device=device,compute_type="int8" if device=="cpu" else "float16")
+
 def transcribe(video:Path, model="small"):
     """Use faster-whisper if installed; return sentence/timestamp segments."""
     try:
@@ -15,7 +21,7 @@ def transcribe(video:Path, model="small"):
         raise RuntimeError("Install optional STT dependency: pip install faster-whisper") from exc
     size=os.getenv("WHISPER_MODEL",model)
     device=os.getenv("WHISPER_DEVICE","cpu")
-    engine=WhisperModel(size,device=device,compute_type="int8" if device=="cpu" else "float16")
+    engine=_load_whisper(size,device)
     segments,_=engine.transcribe(str(video),language="ko",vad_filter=True,beam_size=5)
     return [{"start":float(s.start),"end":float(s.end),"source":s.text.strip()} for s in segments if s.text.strip()]
 
