@@ -6,18 +6,23 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.4.1",
     "vite": "^5.4.0",
     "typescript": "^5.6.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "lucide-react": "^0.468.0"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.468.0",
+    "@astryxdesign/core": "^0.4.1",
+    "@astryxdesign/theme-neutral": "^0.4.1",
+    "@stylexjs/stylex": "^0.16.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0"
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@astryxdesign/cli": "^0.4.1"
   }
 }
