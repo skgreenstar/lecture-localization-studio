@@ -37,15 +37,24 @@ def translate(text,language,model="qwen3:8b"):
     if not answer:raise RuntimeError("Translation model returned empty text")
     return answer
 
+from functools import lru_cache
+@lru_cache(maxsize=2)
+def _load_tts_model(model_id):
+    from mlx_audio.tts.utils import load_model
+    return load_model(model_id)
+
 def synthesize(text,language,voice,target:Path):
     try:
         from mlx_audio.tts.utils import load_model
         import numpy as np
         import soundfile as sf
     except ImportError as exc:raise RuntimeError("Install mlx-audio, numpy, and soundfile on Apple Silicon") from exc
-    model=load_model(os.getenv("TTS_MODEL","mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"))
+    model=_load_tts_model(os.getenv("TTS_MODEL","mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"))
     lang={"en":"English","ja":"Japanese","zh":"Chinese","es":"Spanish","fr":"French","de":"German"}.get(language,language)
-    chunks=list(model.generate(text,voice=voice,lang_code=lang))
+    if hasattr(model,"generate_custom_voice"):
+        chunks=list(model.generate_custom_voice(text=text,language=lang,speaker=voice))
+    else:
+        chunks=list(model.generate(text,voice=voice,lang_code=lang))
     if not chunks:raise RuntimeError("TTS returned no audio")
     arr=np.concatenate([np.asarray(x.audio).reshape(-1) for x in chunks])
     target.parent.mkdir(parents=True,exist_ok=True)
