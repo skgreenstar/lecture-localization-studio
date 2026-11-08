@@ -87,6 +87,14 @@ def run_forever():
     from tasks import execute
     worker_id=uuid.uuid4().hex
     print("worker started",worker_id,flush=True)
+    # An OS-level lock prevents two GPU workers from running concurrently on one host.
+    lock_path=DB.parent/"gpu-worker.lock"
+    import fcntl
+    lock_handle=lock_path.open("a+")
+    try:
+        fcntl.flock(lock_handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit("Another GPU worker is already running on this host")
     while True:
         job=claim(worker_id)
         if not job:time.sleep(1);continue
