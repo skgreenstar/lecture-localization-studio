@@ -1,0 +1,5 @@
+-r requirements.txt
+faster-whisper>=1.1,<2
+numpy>=1.26
+soundfile>=0.12
+# On Apple Silicon only, install mlx-audio separately according to its platform instructions.
