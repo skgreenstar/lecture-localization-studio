@@ -45,13 +45,13 @@ def claim(worker_id):
         c.execute("""UPDATE durable_jobs SET status='running',worker_id=?,leased_until=?,
             attempts=attempts+1,updated_at=? WHERE id=?""",(worker_id,now+LEASE,now,row["id"]))
         c.execute("COMMIT")
-        return dict(row)
+        return {**dict(row),"attempts":row["attempts"]+1}
 def heartbeat(jid,worker_id):
     with connect() as c:
         c.execute("UPDATE durable_jobs SET leased_until=?,updated_at=? WHERE id=? AND worker_id=? AND status='running'",
                   (time.time()+LEASE,time.time(),jid,worker_id))
 def progress(jid,value):
-    with connect() as c:c.execute("UPDATE durable_jobs SET progress=?,updated_at=? WHERE id=?",(max(0,min(99,int(value))),time.time(),jid))
+    with connect() as c:c.execute("UPDATE durable_jobs SET progress=?,updated_at=? WHERE id=? AND status=\'running\'",(max(0,min(99,int(value))),time.time(),jid))
 def finish(jid,worker_id,output):
     with connect() as c:c.execute("""UPDATE durable_jobs SET status='completed',progress=100,output=?,
         leased_until=NULL,updated_at=? WHERE id=? AND worker_id=?""",(str(output),time.time(),jid,worker_id))
@@ -62,6 +62,16 @@ def fail(jid,worker_id,error):
 def status(jid):
     with connect() as c:r=c.execute("SELECT * FROM durable_jobs WHERE id=?",(jid,)).fetchone()
     return dict(r) if r else None
+
+def cancel(jid):
+    with connect() as c:
+        r=c.execute("UPDATE durable_jobs SET status=\'cancelled\',updated_at=? WHERE id=? AND status=\'queued\'",(time.time(),jid))
+    return bool(r.rowcount)
+
+def retry(jid):
+    with connect() as c:
+        r=c.execute("UPDATE durable_jobs SET status=\'queued\',attempts=0,progress=0,error=NULL,updated_at=? WHERE id=? AND status=\'failed\'",(time.time(),jid))
+    return bool(r.rowcount)
 def run_forever():
     from tasks import execute
     worker_id=uuid.uuid4().hex
