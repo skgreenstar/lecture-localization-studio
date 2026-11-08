@@ -1,3 +1,4 @@
+from queue_worker import enqueue, status as durable_status
 from pathlib import Path
 import sqlite3, uuid, shutil, subprocess, json, threading, time
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -84,6 +85,7 @@ def add_language(pid:str,payload:LanguageIn):
 @app.delete("/api/projects/{pid}")
 def delete_project(pid:str):
     with db() as c:
+        if c.execute("SELECT 1 FROM durable_jobs WHERE project_id=? AND status IN (\'queued\',\'running\') LIMIT 1",(pid,)).fetchone():raise HTTPException(409,"Active jobs must finish before deletion")
         p=c.execute("SELECT video FROM projects WHERE id=?",(pid,)).fetchone()
         if not p:raise HTTPException(404,"Project not found")
         c.execute("DELETE FROM jobs WHERE translation_id IN (SELECT t.id FROM translations t JOIN segments s ON s.id=t.segment_id WHERE s.project_id=?)",(pid,))
@@ -181,11 +183,11 @@ def tts(tid:str,payload:TTSIn,background:BackgroundTasks):
         if not t["approved"] or latest(c,t["segment_id"],t["language"])["id"]!=tid: raise HTTPException(409,"Approve current translation first")
         jid=uid()
         c.execute("INSERT INTO jobs VALUES(?,?,?,?)",(jid,tid,"queued",None))
-    background.add_task(run_tts,jid,tid,payload.voice)
+    jid=enqueue("tts",None,{"translation_id":tid,"voice":payload.voice})
     return {"job_id":jid,"status":"queued"}
 @app.get("/api/jobs/{jid}")
 def job(jid:str):
-    with db() as c: r=c.execute("SELECT * FROM jobs WHERE id=?",(jid,)).fetchone()
+    r=durable_status(jid)
     if not r: raise HTTPException(404,"Job not found")
     return dict(r)
 @app.get("/api/audio/{aid}")
@@ -217,7 +219,7 @@ def queue_pipeline(pid,language,kind,background,model="qwen3:8b"):
         if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
         jid=uid()
         c.execute("INSERT INTO pipeline_jobs(id,project_id,language,kind,status) VALUES(?,?,?,?,?)",(jid,pid,language,kind,"queued"))
-    background.add_task(run_pipeline,jid,pid,language,kind,model)
+    jid=enqueue(kind,pid,{"language":language,"model":model})
     return {"job_id":jid,"status":"queued"}
 
 @app.post("/api/projects/{pid}/transcribe")
@@ -235,13 +237,14 @@ def start_export(pid:str,payload:TranslateIn,background:BackgroundTasks):
 
 @app.get("/api/pipeline-jobs/{jid}")
 def pipeline_job(jid:str):
-    with db() as c:r=c.execute("SELECT * FROM pipeline_jobs WHERE id=?",(jid,)).fetchone()
+    r=durable_status(jid)
     if not r:raise HTTPException(404,"Job not found")
     return dict(r)
 
 @app.get("/api/projects/{pid}/exports/{language}")
 def download_export(pid:str,language:str):
-    target=DATA/pid/("dubbed_"+language+".mp4")
+    with db() as c:r=c.execute("SELECT output FROM durable_jobs WHERE project_id=? AND kind=\'export\' AND status=\'completed\' ORDER BY updated_at DESC",(pid,)).fetchall()
+    target=next((Path(x["output"]) for x in r if x["output"] and ("dubbed_"+language+"_") in x["output"]),DATA/pid/"missing.mp4")
     if not target.exists():raise HTTPException(404,"Export not ready")
     return FileResponse(target,media_type="video/mp4",filename=target.name)
 
