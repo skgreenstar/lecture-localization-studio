@@ -93,6 +93,8 @@ def delete_project(pid:str):
         c.execute("DELETE FROM jobs WHERE translation_id IN (SELECT t.id FROM translations t JOIN segments s ON s.id=t.segment_id WHERE s.project_id=?)",(pid,))
         c.execute("DELETE FROM audio_assets WHERE translation_id IN (SELECT t.id FROM translations t JOIN segments s ON s.id=t.segment_id WHERE s.project_id=?)",(pid,))
         c.execute("DELETE FROM translations WHERE segment_id IN (SELECT id FROM segments WHERE project_id=?)",(pid,))
+        c.execute("DELETE FROM stt_chunks WHERE project_id=?",(pid,)) if c.execute("SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=\'stt_chunks\'").fetchone() else None
+        c.execute("DELETE FROM durable_jobs WHERE project_id=?",(pid,))
         for table in ("segments","project_tags","project_languages"):
             c.execute(f"DELETE FROM {table} WHERE project_id=?",(pid,))
         c.execute("DELETE FROM projects WHERE id=?",(pid,))
@@ -184,7 +186,9 @@ def tts(tid:str,payload:TTSIn,background:BackgroundTasks):
         if not t: raise HTTPException(404,"Translation not found")
         if not t["approved"] or latest(c,t["segment_id"],t["language"])["id"]!=tid: raise HTTPException(409,"Approve current translation first")
         jid=uid()
-    jid=enqueue("tts",None,{"translation_id":tid,"voice":payload.voice})
+    with db() as c:
+        project_id=c.execute("SELECT project_id FROM segments WHERE id=?",(t["segment_id"],)).fetchone()["project_id"]
+    jid=enqueue("tts",project_id,{"translation_id":tid,"voice":payload.voice})
     return {"job_id":jid,"status":"queued"}
 @app.get("/api/jobs/{jid}")
 def job(jid:str):
