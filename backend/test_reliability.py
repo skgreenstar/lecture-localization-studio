@@ -65,3 +65,21 @@ def test_manual_retry_resets_lease():
     job=status(jid)
     assert job["status"]=="queued"
     assert job["leased_until"] is None
+
+def test_worker_progress_rejects_stale_owner():
+    jid=enqueue("test",None,{"unique":uuid.uuid4().hex})
+    assert claim("worker-a")["id"]==jid
+    queue.progress(jid,50,"worker-b")
+    assert status(jid)["progress"]==0
+    queue.progress(jid,50,"worker-a")
+    assert status(jid)["progress"]==50
+
+def test_reclaim_after_expired_lease():
+    jid=enqueue("test",None,{"unique":uuid.uuid4().hex})
+    assert claim("worker-a")["id"]==jid
+    with connect() as c:c.execute("UPDATE durable_jobs SET leased_until=? WHERE id=?",(time.time()-1,jid))
+    assert claim("worker-b")["id"]==jid
+    finish(jid,"worker-a","stale")
+    assert status(jid)["status"]=="running"
+    finish(jid,"worker-b","recovered")
+    assert status(jid)["status"]=="completed"
