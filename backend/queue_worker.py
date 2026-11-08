@@ -26,9 +26,17 @@ def initialize():
 initialize()
 def enqueue(kind,project_id,payload):
     jid=uuid.uuid4().hex
+    serialized=json.dumps(payload,sort_keys=True)
     with connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        existing=c.execute("""SELECT id FROM durable_jobs WHERE kind=? AND project_id IS ? AND payload=?
+            AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1""",(kind,project_id,serialized)).fetchone()
+        if existing:
+            c.execute("COMMIT")
+            return existing["id"]
         c.execute("INSERT INTO durable_jobs(id,project_id,kind,payload,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                  (jid,project_id,kind,json.dumps(payload),"queued",time.time(),time.time()))
+                  (jid,project_id,kind,serialized,"queued",time.time(),time.time()))
+        c.execute("COMMIT")
     return jid
 def claim(worker_id):
     now=time.time()
