@@ -59,8 +59,10 @@ def heartbeat(jid,worker_id):
     with connect() as c:
         c.execute("UPDATE durable_jobs SET leased_until=?,updated_at=? WHERE id=? AND worker_id=? AND status='running'",
                   (time.time()+LEASE,time.time(),jid,worker_id))
-def progress(jid,value):
-    with connect() as c:c.execute("UPDATE durable_jobs SET progress=?,updated_at=? WHERE id=? AND status=\'running\'",(max(0,min(99,int(value))),time.time(),jid))
+def progress(jid,value,worker_id=None):
+    with connect() as c:
+        c.execute("UPDATE durable_jobs SET progress=?,updated_at=? WHERE id=? AND worker_id IS ? AND status='running'",
+                  (max(0,min(99,int(value))),time.time(),jid,worker_id))
 def finish(jid,worker_id,output):
     with connect() as c:c.execute("""UPDATE durable_jobs SET status='completed',progress=100,output=?,
         leased_until=NULL,updated_at=? WHERE id=? AND worker_id=?""",(str(output),time.time(),jid,worker_id))
@@ -93,7 +95,7 @@ def run_forever():
             while not stop.wait(20):heartbeat(job["id"],worker_id)
         t=threading.Thread(target=beat,daemon=True);t.start()
         try:
-            output=execute(job,lambda n:progress(job["id"],n))
+            output=execute(job,lambda n:progress(job["id"],n,worker_id))
             finish(job["id"],worker_id,output)
         except Exception as exc:
             traceback.print_exc()
