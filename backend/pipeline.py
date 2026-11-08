@@ -52,22 +52,66 @@ def synthesize(text,language,voice,target:Path):
     sf.write(str(target),arr,int(chunks[0].sample_rate))
     return target
 
-def render_dubbed_video(video:Path, clips:list, output:Path, duration:float):
-    """Mix approved segment WAVs onto silence at their timestamps; preserve source video."""
-    if not clips:raise ValueError("No approved TTS audio to export")
+def render_dubbed_video(video:Path,clips:list,output:Path,duration:float):
+    """Stream segment audio to a continuous WAV, avoiding thousands of FFmpeg inputs.
+    Each clip is (start,end,path). Refuse large tempo adjustments rather than hide overlap.
+    """
+    import soundfile as sf
+    import numpy as np
+    if not clips:raise ValueError("No clips")
+    if duration<=0:raise ValueError("Invalid video duration")
     output.parent.mkdir(parents=True,exist_ok=True)
-    args=["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(video)]
-    filters=[]
-    for i,(start,audio) in enumerate(clips):
-        args+=["-i",str(audio)]
-        delay=max(0,round(float(start)*1000))
-        filters.append(f"[{i+1}:a]adelay={delay}:all=1,aresample=48000[a{i}]")
-    refs="".join(f"[a{i}]" for i in range(len(clips)))
-    filters.append(f"{refs}amix=inputs={len(clips)}:duration=longest:normalize=0[mixed]")
-    args+=["-filter_complex",";".join(filters),"-map","0:v:0","-map","[mixed]","-c:v","copy","-c:a","aac","-b:a","192k","-movflags","+faststart","-t",str(duration),str(output)]
-    command(args,timeout=7200)
-    if not output.exists() or output.stat().st_size==0:raise RuntimeError("FFmpeg did not produce an output file")
-    return output
+    sample_rate=24000
+    # Stream a PCM WAV on disk; memory use is bounded to one segment.
+    audio_file=output.with_suffix(".mix.wav")
+    ordered=sorted(clips,key=lambda c:c[0])
+    try:
+        with sf.SoundFile(str(audio_file),mode="w",samplerate=sample_rate,channels=1,subtype="PCM_16") as out:
+            cursor=0
+            for idx,(start,end,path) in enumerate(ordered):
+                next_start=ordered[idx+1][0] if idx+1<len(ordered) else duration
+                if end<=start or start<0 or next_start<start:raise ValueError("Invalid segment timeline")
+                available=min(end,next_start,duration)-start
+                if available<=0:raise ValueError("Overlapping or zero-length segment")
+                with sf.SoundFile(str(path)) as inp:
+                    data=inp.read(dtype="float32",always_2d=True)
+                    source_rate=inp.samplerate
+                mono=data.mean(axis=1)
+                original_length=len(mono)/source_rate
+                if original_length>available*1.25:
+                    raise ValueError(f"Segment {idx+1} exceeds time slot by more than 25%; edit or regenerate shorter speech")
+                if original_length>available:
+                    temp=output.with_name(output.stem+f".segment{idx}.wav")
+                    fixed=output.with_name(output.stem+f".fixed{idx}.wav")
+                    try:
+                        sf.write(str(temp),mono,source_rate)
+                        command(["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(temp),
+                                 "-af",f"atempo={original_length/available:.6f},aresample={sample_rate}",
+                                 "-ac","1",str(fixed)])
+                        mono,source_rate=sf.read(str(fixed),dtype="float32")
+                    finally:
+                        temp.unlink(missing_ok=True);fixed.unlink(missing_ok=True)
+                if source_rate!=sample_rate:
+                    from math import ceil
+                    positions=np.arange(ceil(len(mono)*sample_rate/source_rate))*source_rate/sample_rate
+                    mono=np.interp(positions,np.arange(len(mono)),mono).astype("float32")
+                begin=round(start*sample_rate)
+                if begin<cursor:raise ValueError("Audio collision")
+                while cursor<begin:
+                    n=min(65536,begin-cursor);out.write(np.zeros(n,dtype="float32"));cursor+=n
+                allowed=round(min(end,next_start,duration)*sample_rate)-begin
+                if len(mono)>allowed+round(sample_rate*.02):raise ValueError("Audio still exceeds its segment slot")
+                mono=mono[:allowed]
+                out.write(mono);cursor+=len(mono)
+            total=round(duration*sample_rate)
+            while cursor<total:
+                n=min(65536,total-cursor);out.write(np.zeros(n,dtype="float32"));cursor+=n
+        command(["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(video),"-i",str(audio_file),
+                 "-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac","-b:a","192k",
+                 "-t",str(duration),"-movflags","+faststart",str(output)])
+        if not output.exists() or output.stat().st_size==0:raise RuntimeError("Empty MP4 output")
+        return output
+    finally:audio_file.unlink(missing_ok=True)
 
 def write_srt(rows,output:Path):
     def ts(sec):
