@@ -115,10 +115,15 @@ def render_dubbed_video(video:Path,clips:list,output:Path,duration:float):
                 while cursor<begin:
                     n=min(65536,begin-cursor);out.write(np.zeros(n,dtype="float32"));cursor+=n
                 allowed=round(min(end,next_start,duration)*sample_rate)-begin
-                if len(mono)>allowed+round(sample_rate*.02):raise ValueError("Audio still exceeds its segment slot")
-                mono=mono[:allowed]
+                if len(mono)>allowed:
+                    raise ValueError(f"Segment {idx+1} still exceeds its slot after tempo correction; shorten translation")
+                # Apply a short fade-out to avoid abrupt clipping at sentence boundaries.
+                fade=min(len(mono)//2,round(sample_rate*.015))
+                if fade:
+                    mono[-fade:]*=np.linspace(1,0,fade,dtype=np.float32)
                 out.write(mono);cursor+=len(mono)
             total=round(duration*sample_rate)
+            if cursor>total:raise ValueError("Audio exceeds video duration")
             while cursor<total:
                 n=min(65536,total-cursor);out.write(np.zeros(n,dtype="float32"));cursor+=n
         command(["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(video),"-i",str(audio_file),
