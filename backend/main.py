@@ -17,6 +17,8 @@ app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:5173","http:/
 def db():
     c=sqlite3.connect(DB,timeout=30)
     c.row_factory=sqlite3.Row
+    c.execute("PRAGMA busy_timeout=30000")
+    c.execute("PRAGMA journal_mode=WAL")
     return c
 with db() as c:
     c.executescript("""
@@ -182,7 +184,6 @@ def tts(tid:str,payload:TTSIn,background:BackgroundTasks):
         if not t: raise HTTPException(404,"Translation not found")
         if not t["approved"] or latest(c,t["segment_id"],t["language"])["id"]!=tid: raise HTTPException(409,"Approve current translation first")
         jid=uid()
-        c.execute("INSERT INTO jobs VALUES(?,?,?,?)",(jid,tid,"queued",None))
     jid=enqueue("tts",None,{"translation_id":tid,"voice":payload.voice})
     return {"job_id":jid,"status":"queued"}
 @app.get("/api/jobs/{jid}")
@@ -218,7 +219,6 @@ def queue_pipeline(pid,language,kind,background,model="qwen3:8b"):
     with db() as c:
         if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
         jid=uid()
-        c.execute("INSERT INTO pipeline_jobs(id,project_id,language,kind,status) VALUES(?,?,?,?,?)",(jid,pid,language,kind,"queued"))
     jid=enqueue(kind,pid,{"language":language,"model":model})
     return {"job_id":jid,"status":"queued"}
 
