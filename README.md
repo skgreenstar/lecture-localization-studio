@@ -5,7 +5,7 @@ Local-first lecture localization app for Korean videos: React + TypeScript, Fast
 ## Implemented
 - Multiple project library: upload, rename, delete, tags, search, sorting, language progress.
 - Segment review: timestamp navigation, per-language translation versioning, approve latest translation.
-- Background API jobs for Korean transcription, Ollama translation, per-segment MLX TTS, and dubbed MP4 export.
+- Durable worker jobs for Korean transcription, Ollama translation, per-segment MLX TTS, and dubbed MP4 export.
 - SRT subtitle download. Source video is stored once per project; translations are separated by language.
 - API jobs return explicit failure details if a model or tool is missing.
 
@@ -23,7 +23,13 @@ source .venv/bin/activate
 pip install -r requirements-ai.txt
 uvicorn main:app --reload --port 8000
 ```
-In another terminal:
+Start the independent AI worker in a second terminal (same Python environment):
+```bash
+cd backend
+source .venv/bin/activate
+python queue_worker.py
+```
+In a third terminal:
 ```bash
 cd frontend
 npm install
@@ -45,7 +51,7 @@ cd backend
 pip install pytest httpx
 python -m pytest -q
 ```
-Tests exercise API flows without downloading AI models. **End-to-end STT, translation, TTS, MP4 and frontend build have not been verified on the target Apple Silicon machine.** The MLX-Audio model API may vary by version and voice/language compatibility. Long-running jobs use a persistent SQLite-backed worker queue; run the separate worker process. Concurrent multi-hour video processing, automatic retries, progress percentages, subtitle/video alignment quality, and resource scheduling need further production hardening. Export mixes generated speech at segment timestamps, but does not time-stretch audio to fit every original sentence duration, so overlap is possible.
+Tests exercise API flows without downloading AI models. **End-to-end STT, translation, TTS, MP4 and frontend build have not been verified on the target Apple Silicon machine.** The MLX-Audio model API may vary by version and voice/language compatibility. Long-running jobs use a persistent SQLite-backed worker queue; run the separate worker process. Multi-hour STT is checkpointed in 10-minute chunks; the queue retries failures with backoff, and export checks timing slots, applies limited time stretching and rejects excessive overlap. Real two-hour reliability, exact audio alignment quality, and resource scheduling still need validation on the target machine.
 
 ## Environment
 - `WHISPER_MODEL` (default `small`)
@@ -63,3 +69,12 @@ Tests exercise API flows without downloading AI models. **End-to-end STT, transl
 
 ## Verification status
 The repository has CI test definitions, but this revision has **not** been confirmed to pass GitHub Actions or exercised with a two-hour real video. Verify the worker startup, STT chunk restart, Ollama/MLX model APIs, generated WAV durations, and the final MP4 on the target machine before production use.
+
+## Model adapters and job semantics
+- Model selection is isolated in `backend/adapters.py`. Register new STT, translation, or TTS adapters without changing the API or job scheduler.
+- `STT_BACKEND=whisper`, `TRANSLATION_BACKEND=ollama`, `TTS_BACKEND=mlx` select the adapter. `TRANSLATION_MODEL=qwen3:8b` and `TTS_MODEL=...` select the model.
+- `TTS_REVISION` is included in the TTS content cache key. **Change it whenever the model weights or synthesis settings change** to avoid reusing incompatible speech.
+- SQLite WAL stores jobs, leases and retry state. Use one worker for Apple Silicon GPU inference. Duplicate active requests are coalesced.
+- A restarted worker resumes at committed STT chunks or untranslated segments. A completed TTS cache entry is reused for matching text, language, voice and model identity.
+- Exports are versioned by translation/audio revision. If a segment cannot fit its allotted timeline with at most 25% speech acceleration, export fails with an actionable error instead of overlapping the next segment.
+- The output currently **replaces** original audio; background sound/music preservation, per-word forced alignment and speaker diarization are not implemented.
