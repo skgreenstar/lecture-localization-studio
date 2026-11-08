@@ -1,7 +1,7 @@
 import os, tempfile, wave
 from pathlib import Path
 from unittest.mock import patch
-from queue_worker import enqueue,claim,status,finish,connect
+from queue_worker import enqueue,claim,status,finish,connect,cancel,retry
 from tasks import digest
 from pipeline import render_dubbed_video
 import pytest
@@ -12,6 +12,8 @@ def test_cache_identity_is_deterministic():
 
 def test_durable_job_claim_and_complete():
     jid=enqueue("test",None,{"hello":"world"})
+    # Isolate the test from jobs queued by other test cases.
+    with connect() as c:c.execute("UPDATE durable_jobs SET created_at=-1 WHERE id=?",(jid,))
     job=claim("pytest-worker")
     assert job is not None
     assert job["id"]==jid
@@ -28,3 +30,16 @@ def test_reject_overlong_timeline(tmp_path):
     sf.write(wav,np.zeros(24000*3,dtype="float32"),24000)
     with pytest.raises(ValueError,match="25%"):
         render_dubbed_video(tmp_path/"video.mp4",[(0,1,wav)],tmp_path/"out.mp4",3)
+
+def test_cancel_queued_job():
+    jid=enqueue("test",None,{})
+    assert cancel(jid)
+    assert status(jid)["status"]=="cancelled"
+    assert not retry(jid)
+
+def test_retry_failed_job():
+    jid=enqueue("test",None,{})
+    with connect() as c:c.execute("UPDATE durable_jobs SET status='failed' WHERE id=?",(jid,))
+    assert retry(jid)
+    assert status(jid)["status"]=="queued"
+    assert cancel(jid)
