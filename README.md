@@ -78,3 +78,10 @@ The repository has CI test definitions, but this revision has **not** been confi
 - A restarted worker resumes at committed STT chunks or untranslated segments. A completed TTS cache entry is reused for matching text, language, voice and model identity.
 - Exports are versioned by translation/audio revision. If a segment cannot fit its allotted timeline with at most 25% speech acceleration, export fails with an actionable error instead of overlapping the next segment.
 - The output currently **replaces** original audio; background sound/music preservation, per-word forced alignment and speaker diarization are not implemented.
+
+## Reliability fixes (2026-11-08)
+- Manual retry now clears stale `leased_until` and `worker_id` values.
+- Queue unit tests use a fresh temporary SQLite database per test; lease reclamation, stale-worker progress, retry, and deduplication are covered.
+- The worker uses a nonblocking OS file lock (`backend/data/gpu-worker.lock`) to prevent two workers from starting on the same Mac/Linux host. It does **not** coordinate workers on separate machines.
+- Audio rendering no longer silently truncates the end of a segment after tempo correction; it raises an actionable error instead. It also applies a 15ms fade at the end of each clip.
+- **Verification required:** CI and end-to-end Apple Silicon inference were not executed during these changes. Use a short sample first, then a 2-hour stress test with intentional worker termination and restart.
