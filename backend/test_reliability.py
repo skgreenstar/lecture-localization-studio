@@ -1,3 +1,4 @@
+import time
 import os, tempfile, wave
 from pathlib import Path
 from unittest.mock import patch
@@ -43,3 +44,20 @@ def test_retry_failed_job():
     assert retry(jid)
     assert status(jid)["status"]=="queued"
     assert cancel(jid)
+
+def test_enqueue_deduplicates_active_jobs():
+    from queue_worker import enqueue
+    payload={"language":"en","unique":"dedup-test-"+os.urandom(8).hex()}
+    a=enqueue("translate","test-project",payload)
+    b=enqueue("translate","test-project",payload)
+    assert a==b
+
+def test_manual_retry_resets_lease():
+    from queue_worker import enqueue,connect,retry,status
+    jid=enqueue("test",None,{"unique":os.urandom(8).hex()})
+    with connect() as c:
+        c.execute("UPDATE durable_jobs SET status='failed',leased_until=? WHERE id=?",(time.time()+3600,jid))
+    assert retry(jid)
+    job=status(jid)
+    assert job["status"]=="queued"
+    assert job["leased_until"] is None
