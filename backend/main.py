@@ -4,6 +4,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from fastapi import BackgroundTasks
+from fastapi.responses import Response
+from pipeline import transcribe, translate, synthesize, render_dubbed_video, write_srt
 
 DATA=Path(__file__).parent/"data"
 DATA.mkdir(exist_ok=True)
@@ -21,6 +24,7 @@ with db() as c:
     CREATE TABLE IF NOT EXISTS translations(id TEXT PRIMARY KEY,segment_id TEXT,language TEXT,text TEXT,version INTEGER,approved INTEGER DEFAULT 0,UNIQUE(segment_id,language,version));
     CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,translation_id TEXT,status TEXT,error TEXT);
     CREATE TABLE IF NOT EXISTS audio_assets(id TEXT PRIMARY KEY,translation_id TEXT,path TEXT);
+    CREATE TABLE IF NOT EXISTS pipeline_jobs(id TEXT PRIMARY KEY,project_id TEXT,language TEXT,kind TEXT,status TEXT,error TEXT,output TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS project_tags(project_id TEXT,tag TEXT,PRIMARY KEY(project_id,tag));
     CREATE TABLE IF NOT EXISTS project_languages(project_id TEXT,language TEXT,PRIMARY KEY(project_id,language));
     """)
@@ -100,6 +104,9 @@ class SegmentIn(BaseModel):
 class TranslationIn(BaseModel):
     text:str=Field(min_length=1)
     expected_version:int=Field(ge=0)
+class TranslateIn(BaseModel):
+    language:str="en"
+    model:str="qwen3:8b"
 class TTSIn(BaseModel):
     voice:str="Ryan"
 @app.get("/api/health")
@@ -167,15 +174,15 @@ def approve(tid:str):
         c.execute("UPDATE translations SET approved=1 WHERE id=?",(tid,))
     return {"approved":True}
 @app.post("/api/translations/{tid}/tts")
-def tts(tid:str,payload:TTSIn):
+def tts(tid:str,payload:TTSIn,background:BackgroundTasks):
     with db() as c:
         t=c.execute("SELECT * FROM translations WHERE id=?",(tid,)).fetchone()
         if not t: raise HTTPException(404,"Translation not found")
         if not t["approved"] or latest(c,t["segment_id"],t["language"])["id"]!=tid: raise HTTPException(409,"Approve current translation first")
         jid=uid()
         c.execute("INSERT INTO jobs VALUES(?,?,?,?)",(jid,tid,"queued",None))
-    # Worker is intentionally not connected yet; no fake audio is produced.
-    return {"job_id":jid,"status":"queued","note":"MLX TTS worker integration pending"}
+    background.add_task(run_tts,jid,tid,payload.voice)
+    return {"job_id":jid,"status":"queued"}
 @app.get("/api/jobs/{jid}")
 def job(jid:str):
     with db() as c: r=c.execute("SELECT * FROM jobs WHERE id=?",(jid,)).fetchone()
@@ -191,3 +198,107 @@ def demo(pid:str):
     sample=[(3,8,"트랜스포머는 어텐션 메커니즘을 사용합니다.","Transformers use an attention mechanism."),(9,15,"쿼리와 키의 유사도를 계산합니다.","We calculate the similarity between queries and keys."),(16,22,"소프트맥스를 적용해 가중치를 구합니다.","We apply softmax to obtain the weights.")]
     for a,b,ko,en in sample: add_segment(pid,SegmentIn(start=a,end=b,source=ko,translation=en))
     return {"created":len(sample)}
+
+def run_tts(jid,tid,voice):
+    with db() as c:
+        c.execute("UPDATE jobs SET status='running' WHERE id=?",(jid,))
+        t=c.execute("SELECT * FROM translations WHERE id=?",(tid,)).fetchone()
+    try:
+        target=DATA/"audio"/(uid()+".wav")
+        synthesize(t["text"],t["language"],voice,target)
+        with db() as c:
+            c.execute("INSERT INTO audio_assets VALUES(?,?,?)",(uid(),tid,str(target)))
+            c.execute("UPDATE jobs SET status='completed' WHERE id=?",(jid,))
+    except Exception as exc:
+        with db() as c:c.execute("UPDATE jobs SET status='failed',error=? WHERE id=?",(str(exc)[:1000],jid))
+
+def queue_pipeline(pid,language,kind,background,model="qwen3:8b"):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
+        jid=uid()
+        c.execute("INSERT INTO pipeline_jobs(id,project_id,language,kind,status) VALUES(?,?,?,?,?)",(jid,pid,language,kind,"queued"))
+    background.add_task(run_pipeline,jid,pid,language,kind,model)
+    return {"job_id":jid,"status":"queued"}
+
+@app.post("/api/projects/{pid}/transcribe")
+def start_transcription(pid:str,background:BackgroundTasks):
+    return queue_pipeline(pid,"ko","stt",background)
+
+@app.post("/api/projects/{pid}/translate")
+def start_translation(pid:str,payload:TranslateIn,background:BackgroundTasks):
+    if payload.language not in ("en","ja","zh","es","fr","de"):raise HTTPException(400,"Unsupported language")
+    return queue_pipeline(pid,payload.language,"translate",background,payload.model)
+
+@app.post("/api/projects/{pid}/export")
+def start_export(pid:str,payload:TranslateIn,background:BackgroundTasks):
+    return queue_pipeline(pid,payload.language,"export",background)
+
+@app.get("/api/pipeline-jobs/{jid}")
+def pipeline_job(jid:str):
+    with db() as c:r=c.execute("SELECT * FROM pipeline_jobs WHERE id=?",(jid,)).fetchone()
+    if not r:raise HTTPException(404,"Job not found")
+    return dict(r)
+
+@app.get("/api/projects/{pid}/exports/{language}")
+def download_export(pid:str,language:str):
+    target=DATA/pid/("dubbed_"+language+".mp4")
+    if not target.exists():raise HTTPException(404,"Export not ready")
+    return FileResponse(target,media_type="video/mp4",filename=target.name)
+
+@app.get("/api/projects/{pid}/subtitles/{language}")
+def download_subtitles(pid:str,language:str):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM projects WHERE id=?",(pid,)).fetchone():raise HTTPException(404,"Project not found")
+        rows=c.execute("""SELECT s.start,s.end,t.text FROM segments s JOIN translations t ON t.segment_id=s.id
+          WHERE s.project_id=? AND t.language=? AND t.version=(SELECT MAX(x.version) FROM translations x WHERE x.segment_id=s.id AND x.language=t.language)
+          ORDER BY s.start""",(pid,language)).fetchall()
+    if not rows:raise HTTPException(409,"No translated segments")
+    target=write_srt([dict(r) for r in rows],DATA/pid/("subtitles_"+language+".srt"))
+    return FileResponse(target,media_type="application/x-subrip",filename=target.name)
+
+def run_pipeline(jid,pid,language,kind,model):
+    with db() as c:
+        c.execute("UPDATE pipeline_jobs SET status='running' WHERE id=?",(jid,))
+        p=c.execute("SELECT * FROM projects WHERE id=?",(pid,)).fetchone()
+    try:
+        if not p:raise RuntimeError("Project deleted")
+        if kind=="stt":
+            rows=transcribe(Path(p["video"]))
+            with db() as c:
+                # Re-transcription replaces existing segments; warn via explicit API semantics.
+                existing=c.execute("SELECT COUNT(*) n FROM segments WHERE project_id=?",(pid,)).fetchone()["n"]
+                if existing:raise RuntimeError("Project already has segments; create a new project to retranscribe safely")
+                for r in rows:
+                    c.execute("INSERT INTO segments VALUES(?,?,?,?,?)",(uid(),pid,r["start"],r["end"],r["source"]))
+            output=str(len(rows))+" segments"
+        elif kind=="translate":
+            with db() as c:rows=c.execute("SELECT id,source FROM segments WHERE project_id=? ORDER BY start",(pid,)).fetchall()
+            if not rows:raise RuntimeError("Transcribe the video first")
+            count=0
+            for row in rows:
+                with db() as c:
+                    if latest(c,row["id"],language):continue
+                result=translate(row["source"],language,model)
+                with db() as c:
+                    if not latest(c,row["id"],language):
+                        c.execute("INSERT INTO translations VALUES(?,?,?,?,?,0)",(uid(),row["id"],language,result,1))
+                        count+=1
+            with db() as c:c.execute("INSERT OR IGNORE INTO project_languages VALUES(?,?)",(pid,language))
+            output=str(count)+" translated"
+        elif kind=="export":
+            with db() as c:
+                rows=c.execute("""SELECT s.start,s.end,t.id AS tid,a.path FROM segments s
+                    JOIN translations t ON t.segment_id=s.id AND t.language=? AND t.approved=1
+                    JOIN audio_assets a ON a.translation_id=t.id
+                    WHERE s.project_id=? AND t.version=(SELECT MAX(x.version) FROM translations x WHERE x.segment_id=s.id AND x.language=t.language)
+                    AND a.rowid=(SELECT MAX(a2.rowid) FROM audio_assets a2 WHERE a2.translation_id=t.id)
+                    ORDER BY s.start""",(language,pid)).fetchall()
+                total=c.execute("SELECT COUNT(*) n FROM segments WHERE project_id=?",(pid,)).fetchone()["n"]
+            if not total or len(rows)!=total:raise RuntimeError(f"Need approved TTS for all segments ({len(rows)}/{total})")
+            target=DATA/pid/("dubbed_"+language+".mp4")
+            render_dubbed_video(Path(p["video"]),[(r["start"],Path(r["path"])) for r in rows],target,float(p["duration"]))
+            output=str(target)
+        else:raise RuntimeError("Unknown job kind")
+        with db() as c:c.execute("UPDATE pipeline_jobs SET status='completed',output=? WHERE id=?",(output,jid))
+    except Exception as exc:
+        with db() as c:c.execute("UPDATE pipeline_jobs SET status='failed',error=? WHERE id=?",(str(exc)[:1000],jid))
