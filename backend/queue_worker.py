@@ -35,8 +35,8 @@ def claim(worker_id):
     with connect() as c:
         c.execute("BEGIN IMMEDIATE")
         row=c.execute("""SELECT * FROM durable_jobs WHERE
-          status='queued' OR (status='running' AND leased_until<?)
-          ORDER BY created_at LIMIT 1""",(now,)).fetchone()
+          (status='queued' AND (leased_until IS NULL OR leased_until<?)) OR (status='running' AND leased_until<?)
+          ORDER BY created_at LIMIT 1""",(now,now)).fetchone()
         if not row:
             c.execute("COMMIT");return None
         if row["attempts"]>=row["max_attempts"]:
@@ -57,8 +57,8 @@ def finish(jid,worker_id,output):
         leased_until=NULL,updated_at=? WHERE id=? AND worker_id=?""",(str(output),time.time(),jid,worker_id))
 def fail(jid,worker_id,error):
     with connect() as c:c.execute("""UPDATE durable_jobs SET status=CASE WHEN attempts>=max_attempts THEN 'failed' ELSE 'queued' END,
-        error=?,leased_until=NULL,worker_id=NULL,updated_at=? WHERE id=? AND worker_id=?""",
-        (str(error)[:2000],time.time(),jid,worker_id))
+        error=?,leased_until=?,worker_id=NULL,updated_at=? WHERE id=? AND worker_id=?""",
+        (str(error)[:2000],time.time()+min(300,5*2**max(0,(status(jid) or {}).get("attempts",1)-1)),time.time(),jid,worker_id))
 def status(jid):
     with connect() as c:r=c.execute("SELECT * FROM durable_jobs WHERE id=?",(jid,)).fetchone()
     return dict(r) if r else None
