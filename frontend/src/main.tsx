@@ -1,6 +1,9 @@
 import React,{useEffect,useRef,useState} from 'react';
 import{createRoot}from'react-dom/client';
 import{Clapperboard,Languages,Upload,Search,CheckCircle2,RefreshCw,Play,FolderOpen,AudioLines,Save,ChevronRight}from'lucide-react';
+import {Theme} from '@astryxdesign/core/theme';
+import {Button as AstryxButton} from '@astryxdesign/core/Button';
+import {neutralTheme} from '@astryxdesign/theme-neutral/built';
 import './style.css';
 const API='http://127.0.0.1:8000';
 type Translation={id:string;text:string;version:number;approved:number};
@@ -10,6 +13,7 @@ type LibraryProject=Project&{tags:string[];languages:string[];progress:Record<st
 async function request<T>(path:string,init?:RequestInit):Promise<T>{const r=await fetch(API+path,init);if(!r.ok)throw Error((await r.text()).slice(0,300));return r.json();}
 function stamp(n:number){return [Math.floor(n/3600),Math.floor(n%3600/60),Math.floor(n%60)].map(x=>String(x).padStart(2,'0')).join(':')}
 function App(){
+ const[themeMode,setThemeMode]=useState<'light'|'dark'>('light');
  const[projects,setProjects]=useState<Project[]>([]),[project,setProject]=useState<Project|null>(null);
  const[library,setLibrary]=useState<LibraryProject[]>([]),[view,setView]=useState<'library'|'studio'>('library'),[filter,setFilter]=useState(''),[tagFilter,setTagFilter]=useState(''),[sort,setSort]=useState('recent');
  const[segments,setSegments]=useState<Segment[]>([]),[active,setActive]=useState<string|null>(null);
@@ -39,14 +43,14 @@ function App(){
  async function addLanguage(language:string){if(!project)return;await run(async()=>{await request(`/api/projects/${project.id}/languages`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({language})});setLang(language);await refreshProjects()})}
  function choose(s:Segment){setActive(s.id);if(video.current)video.current.currentTime=s.start}
  const filtered=segments.filter(s=>(s.source+' '+(s.translation?.text||'')).toLowerCase().includes(search.toLowerCase()));
- return <div className="shell">
+ return <Theme theme={neutralTheme} mode={themeMode}><div className="shell" data-ui="astryx">
   <aside className="sidebar"><div className="brand"><div className="brandIcon"><Languages size={23}/></div><div><strong>Lingua Studio</strong><small>Lecture Localization</small></div></div>
    <div className="sideLabel">WORKSPACE</div><button className={"sideLink "+(view==='studio'?'selected':'')} onClick={()=>{if(project)setView('studio')}}><Clapperboard size={18}/> Studio</button><button className={"sideLink "+(view==='library'?'selected':'')} onClick={()=>setView('library')}><FolderOpen size={18}/> Project library</button>
    <div className="sideLabel space">YOUR PROJECTS</div>{projects.map(p=><button key={p.id} className={'projectLink '+(p.id===project?.id?'on':'')} onClick={()=>{setProject(p);setView('studio')}}><span className="dot"/><span>{p.title}</span></button>)}
    <button className="newProject" onClick={()=>upload.current?.click()}><Upload size={16}/> Upload video</button><input ref={upload} type="file" accept="video/*" hidden onChange={e=>{const f=e.target.files?.[0];if(f)onUpload(f)}}/>
    <div className="sideFooter">LOCAL FIRST <span>●</span><small>Apple Silicon ready</small></div>
   </aside>
-  <main className="main"><header className="top"><div><div className="eyebrow">WORKSPACE / STUDIO</div><h1>Translation Studio</h1><p>Refine every word. Deliver every meaning.</p></div><div className="headerRight"><span className="localTag">● Local workspace</span><button className="primary" onClick={()=>upload.current?.click()}><Upload size={16}/> New video</button></div></header>
+  <main className="main"><header className="top"><div><div className="eyebrow">WORKSPACE / STUDIO</div><h1>Translation Studio</h1><p>Refine every word. Deliver every meaning.</p></div><div className="headerRight"><span className="localTag">● Local workspace</span><AstryxButton label={themeMode==='light'?'Dark mode':'Light mode'} variant="secondary" onClick={()=>setThemeMode(themeMode==='light'?'dark':'light')}/><button className="primary" onClick={()=>upload.current?.click()}><Upload size={16}/> New video</button></div></header>
    {message&&<div className="notice" role="status">{message}<button onClick={()=>setMessage('')}>×</button></div>}
    {view==='library'?<section className="library"><div className="libraryHeader"><div><h2>Project library</h2><p>Manage lectures, languages and review progress in one place.</p></div><span>{library.length} projects</span></div><div className="libraryFilters"><div className="search"><Search size={16}/><input placeholder="Search projects..." value={filter} onChange={e=>setFilter(e.target.value)}/></div><input placeholder="Filter tag" value={tagFilter} onChange={e=>setTagFilter(e.target.value)}/><select value={sort} onChange={e=>setSort(e.target.value)}><option value="recent">Recently updated</option><option value="name">Name A–Z</option><option value="oldest">Oldest first</option></select></div><div className="libraryGrid">{library.map(p=><article className="libraryCard" key={p.id}><div className="libraryThumb"><Clapperboard size={34}/></div><div className="libraryCardBody"><h3>{p.title}</h3><div className="libraryMeta">{stamp(p.duration)} · {p.segment_count} segments</div><div className="tagRow">{p.tags.map(t=><span key={t}>#{t}</span>)}</div>{p.languages.length?p.languages.map(l=><div className="languageProgress" key={l}><div><span>{l.toUpperCase()} translation</span><strong>{p.progress[l]?.percent||0}%</strong></div><div className="track"><div style={{width:(p.progress[l]?.percent||0)+'%'}}/></div></div>):<p className="libraryMeta">No target languages</p>}<div className="cardActions"><button onClick={()=>{setProject(p);setView('studio')}}>Open studio</button><button onClick={()=>rename(p)}>Rename</button><button onClick={()=>tags(p)}>Tags</button><button className="danger" onClick={()=>remove(p)}>Delete</button></div></div></article>)}</div>{library.length===0&&<div className="empty"><h2>No matching projects</h2><p>Upload a video to start a new lecture localization project.</p><button className="primary" onClick={()=>upload.current?.click()}>Upload video</button></div>}</section>:!project?<div className="empty"><div className="emptyIcon"><Clapperboard size={38}/></div><h2>Your localization workspace</h2><p>Upload a lecture video to review, edit and approve translations sentence by sentence.</p><button className="primary" onClick={()=>upload.current?.click()}><Upload size={16}/> Upload your first video</button>{projects.length>0&&<p>Or select an existing project from the sidebar.</p>}</div>:
    <><section className="overview"><div><div className="eyebrow">CURRENT PROJECT</div><h2>{project.title}</h2><p>Source: Korean <ChevronRight size={14}/> Target: {lang==='en'?'English':lang==='ja'?'Japanese':'Chinese'}</p></div><div className="metrics"><div><small>Duration</small><strong>{stamp(project.duration)}</strong></div><div><small>Segments</small><strong>{segments.length}</strong></div><div><small>Approved</small><strong>{approved}<span> / {segments.length}</span></strong></div></div></section>
@@ -62,6 +66,6 @@ function App(){
     <div className="tip"><strong>Accuracy first</strong><p>Review the Korean transcript before approving translations. Keep technical terms consistent across your lecture.</p></div></div></section></>}
    <footer>Lecture Localization Studio · Local-first MVP · No cloud inference required for editing</footer>
   </main>
- </div>
+ </div></Theme>
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
