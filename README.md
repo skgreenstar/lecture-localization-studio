@@ -54,3 +54,12 @@ Tests exercise API flows without downloading AI models. **End-to-end STT, transl
 - `TTS_MODEL` (default `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit`)
 
 **Security:** local development only. No authentication or file size quota; do not expose the server to the internet.
+
+## Job controls
+- `GET /api/projects/{project_id}/pipeline-jobs`: recent project jobs
+- `GET /api/pipeline-jobs/{job_id}`: progress, attempts and error
+- `POST /api/pipeline-jobs/{job_id}/cancel`: cancel a **queued** job
+- `POST /api/pipeline-jobs/{job_id}/retry`: retry a **failed** job
+
+## Verification status
+The repository has CI test definitions, but this revision has **not** been confirmed to pass GitHub Actions or exercised with a two-hour real video. Verify the worker startup, STT chunk restart, Ollama/MLX model APIs, generated WAV durations, and the final MP4 on the target machine before production use.
