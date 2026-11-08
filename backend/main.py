@@ -24,7 +24,7 @@ with db() as c:
     CREATE TABLE IF NOT EXISTS project_tags(project_id TEXT,tag TEXT,PRIMARY KEY(project_id,tag));
     CREATE TABLE IF NOT EXISTS project_languages(project_id TEXT,language TEXT,PRIMARY KEY(project_id,language));
     """)
-    for column, definition in [("created_at","TEXT DEFAULT CURRENT_TIMESTAMP"),("updated_at","TEXT DEFAULT CURRENT_TIMESTAMP")]:
+    for column, definition in [("created_at","TEXT DEFAULT ''"),("updated_at","TEXT DEFAULT ''")]:
         try: c.execute(f"ALTER TABLE projects ADD COLUMN {column} {definition}")
         except sqlite3.OperationalError: pass
 def uid(): return uuid.uuid4().hex
