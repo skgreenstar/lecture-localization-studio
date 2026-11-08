@@ -1,12 +1,17 @@
 import time
 import os
-import os, tempfile, wave
+import uuid
 from pathlib import Path
-from unittest.mock import patch
+import queue_worker as queue
 from queue_worker import enqueue,claim,status,finish,connect,cancel,retry
 from tasks import digest
 from pipeline import render_dubbed_video
 import pytest
+
+@pytest.fixture(autouse=True)
+def isolated_database(tmp_path,monkeypatch):
+    monkeypatch.setattr(queue,"DB",tmp_path/"test.sqlite3")
+    queue.initialize()
 
 def test_cache_identity_is_deterministic():
     assert digest("hello","en","Ryan","model:v1")==digest("hello","en","Ryan","model:v1")
@@ -14,8 +19,6 @@ def test_cache_identity_is_deterministic():
 
 def test_durable_job_claim_and_complete():
     jid=enqueue("test",None,{"hello":"world"})
-    # Isolate the test from jobs queued by other test cases.
-    with connect() as c:c.execute("UPDATE durable_jobs SET created_at=-1 WHERE id=?",(jid,))
     job=claim("pytest-worker")
     assert job is not None
     assert job["id"]==jid
