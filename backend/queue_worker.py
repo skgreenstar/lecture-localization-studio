@@ -34,9 +34,10 @@ def claim(worker_id):
     now=time.time()
     with connect() as c:
         c.execute("BEGIN IMMEDIATE")
+        c.execute("UPDATE durable_jobs SET status='failed',error='Retry limit reached',updated_at=? WHERE attempts>=max_attempts AND status IN ('queued','running') AND (leased_until IS NULL OR leased_until<?)",(now,now))
         row=c.execute("""SELECT * FROM durable_jobs WHERE
-          (status='queued' AND (leased_until IS NULL OR leased_until<?)) OR (status='running' AND leased_until<?)
-          ORDER BY created_at LIMIT 1""",(now,now)).fetchone()
+          ((status='queued' AND (leased_until IS NULL OR leased_until<?)) OR (status='running' AND leased_until<?))
+          AND attempts<max_attempts ORDER BY created_at LIMIT 1""",(now,now)).fetchone()
         if not row:
             c.execute("COMMIT");return None
         if row["attempts"]>=row["max_attempts"]:
