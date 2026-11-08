@@ -18,7 +18,7 @@
     "lucide-react": "^0.468.0",
     "@astryxdesign/core": "^0.4.1",
     "@astryxdesign/theme-neutral": "^0.4.1",
-    "@stylexjs/stylex": "^0.16.0"
+    "@stylexjs/stylex": "^0.19.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",
